@@ -49,7 +49,9 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.graphics.Insets
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.isVisible
 import androidx.core.widget.NestedScrollView
+import androidx.lifecycle.lifecycleScope
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import androidx.preference.PreferenceManager
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
@@ -61,6 +63,9 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.progressindicator.CircularProgressIndicator
 import com.google.android.material.progressindicator.LinearProgressIndicator
 import io.noties.markwon.Markwon
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import net.pixelos.ota.controller.UpdaterController
 import net.pixelos.ota.controller.UpdaterService
 import net.pixelos.ota.controller.UpdaterService.LocalBinder
@@ -83,17 +88,14 @@ import net.pixelos.ota.model.Update
 import net.pixelos.ota.model.UpdateInfo
 import net.pixelos.ota.model.UpdateStatus
 import org.json.JSONException
-import java.io.BufferedReader
 import java.io.File
 import java.io.IOException
-import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.file.Files
 import java.nio.file.Path
 import java.text.NumberFormat
 import java.util.UUID
-import java.util.concurrent.Executors
 
 class UpdatesActivity : AppCompatActivity(), UpdateImporter.Callbacks {
     private val mBottomAppBar by lazy { requireViewById<BottomAppBar>(R.id.bottomAppBar) }
@@ -185,38 +187,22 @@ class UpdatesActivity : AppCompatActivity(), UpdateImporter.Callbacks {
         setSupportActionBar(toolbar)
         supportActionBar?.apply { title = null }
 
-        headerBuildVersion.text = getString(R.string.header_android_version, Build.VERSION.RELEASE)
-        headerSecurityPatch.text = getString(R.string.header_android_security_patch, securityPatch)
-
+        setupHeaderProperties()
         updateLastCheckedString()
 
-        mSwipeRefresh.setOnRefreshListener {
-            Handler(Looper.getMainLooper())
-                .postDelayed(
-                    {
-                        if (mSwipeRefresh.isRefreshing) {
-                            mSwipeRefresh.isRefreshing = false
-                        }
-                    },
-                    0,
-                )
-            mUpdateInfoWarning.visibility = View.GONE
-            downloadUpdatesList(true)
-        }
-        mSwipeRefresh.isEnabled = true
+        setupSwipeRefresh()
+        setupInsets()
+    }
 
-        mSwipeRefresh.setProgressBackgroundColorSchemeResource(R.color.background)
-        // Not sure if there's a better way
-        val typedValue = TypedValue()
-        theme.resolveAttribute(android.R.attr.colorAccent, typedValue, true)
-        mSwipeRefresh.setColorSchemeColors(typedValue.data)
+    private fun setupHeaderProperties() {
+        headerBuildVersion.text = getString(R.string.header_android_version, Build.VERSION.RELEASE)
+        headerSecurityPatch.text = getString(R.string.header_android_security_patch, securityPatch)
+    }
 
-        // Setup insets for Edge-to-Edge compatibility
-        // from SettingsLib/CollapsingToolBar/EdgeToEdgeUtils.java
-        ViewCompat.setOnApplyWindowInsetsListener(this.requireViewById(android.R.id.content)) {
-                v: View,
-                windowInsets: WindowInsetsCompat,
-            ->
+    private fun setupInsets() {
+        ViewCompat.setOnApplyWindowInsetsListener(this.requireViewById(android.R.id.content))
+        { v: View,
+          windowInsets: WindowInsetsCompat ->
             val insets: Insets =
                 windowInsets.getInsets(
                     (WindowInsetsCompat.Type.systemBars() or
@@ -228,24 +214,28 @@ class UpdatesActivity : AppCompatActivity(), UpdateImporter.Callbacks {
             v.setPadding(insets.left, statusBarHeight, insets.right, insets.bottom)
             WindowInsetsCompat.CONSUMED
         }
+    }
 
-        mNestedScrollView.setOnScrollChangeListener {
-                v: NestedScrollView,
-                _: Int,
-                _: Int,
-                _: Int,
-                _: Int,
-            ->
-            if (!v.canScrollVertically(1)) {
-                // Prevent swipeRefresh from triggering when swiping quickly to the
-                // top
-                mSwipeRefresh.isEnabled = false
-                mBottomAppBar.elevation = 0f
-            } else {
-                mSwipeRefresh.isEnabled = true
-                mBottomAppBar.elevation = 8f
-            }
+    private fun setupSwipeRefresh() {
+        mSwipeRefresh.setOnRefreshListener {
+            Handler(Looper.getMainLooper())
+                .postDelayed(
+                    {
+                        if (mSwipeRefresh.isRefreshing) {
+                            mSwipeRefresh.isRefreshing = false
+                        }
+                    },
+                    0,
+                )
+            mUpdateInfoWarning.isVisible = false
+            downloadUpdatesList(true)
         }
+        mSwipeRefresh.setProgressBackgroundColorSchemeResource(R.color.background)
+        // Not sure if there's a better way
+        val typedValue = TypedValue()
+        theme.resolveAttribute(android.R.attr.colorAccent, typedValue, true)
+        mSwipeRefresh.setColorSchemeColors(typedValue.data)
+        mSwipeRefresh.isEnabled = mNestedScrollView.canScrollVertically(1)
     }
 
     public override fun onStart() {
@@ -365,11 +355,11 @@ class UpdatesActivity : AppCompatActivity(), UpdateImporter.Callbacks {
     }
 
     private fun startRefreshAnimation() {
-        mCircularProgressContainer.visibility = View.VISIBLE
-        mCircularProgress.visibility = View.VISIBLE
-        mCurrentBuildInfo.visibility = View.GONE
-        mUpdateStatusLayout.visibility = View.GONE
-        mBottomAppBar.visibility = View.GONE
+        mCircularProgressContainer.isVisible = true
+        mCircularProgress.isVisible = true
+        mCurrentBuildInfo.isVisible = false
+        mUpdateStatusLayout.isVisible = false
+        mBottomAppBar.isVisible = false
         mUpdateStatus.setText(R.string.checking_for_update)
         mCircularProgress.indicatorSize = 600
         mCircularProgress.animate().alpha(1f).start()
@@ -378,10 +368,10 @@ class UpdatesActivity : AppCompatActivity(), UpdateImporter.Callbacks {
 
     private fun stopRefreshAnimation() {
         mCircularProgress.animate().alpha(0f).start()
-        mCircularProgress.visibility = View.GONE
-        mCircularProgressContainer.visibility = View.GONE
-        mUpdateStatusLayout.visibility = View.VISIBLE
-        mBottomAppBar.visibility = View.VISIBLE
+        mCircularProgress.isVisible = false
+        mCircularProgressContainer.isVisible = false
+        mUpdateStatusLayout.isVisible = true
+        mBottomAppBar.isVisible = true
     }
 
     private fun setupButtonAction(action: Action, button: MaterialButton, enabled: Boolean) {
@@ -393,7 +383,7 @@ class UpdatesActivity : AppCompatActivity(), UpdateImporter.Callbacks {
                 clickListener =
                     if (enabled)
                         View.OnClickListener {
-                            mUpdateInfoWarning.visibility = View.GONE
+                            mUpdateInfoWarning.isVisible = false
                             downloadUpdatesList(true)
                         }
                     else null
@@ -423,7 +413,7 @@ class UpdatesActivity : AppCompatActivity(), UpdateImporter.Callbacks {
                 clickListener =
                     if (enabled)
                         View.OnClickListener { _: View? ->
-                            mUpdateInfoWarning.visibility = View.GONE
+                            mUpdateInfoWarning.isVisible = false
                             val update: UpdateInfo =
                                 mUpdaterController!!.getUpdate(mLatestDownloadId)
                             if (canInstall(update) || update.file.length() == update.fileSize) {
@@ -442,7 +432,7 @@ class UpdatesActivity : AppCompatActivity(), UpdateImporter.Callbacks {
                     if (enabled)
                         View.OnClickListener { _: View? ->
                             if (canInstall(mUpdaterController!!.getUpdate(mLatestDownloadId))) {
-                                getInstallDialog(mLatestDownloadId)!!.show()
+                                getInstallDialog(mLatestDownloadId).show()
                             } else {
                                 showUpdateInfo(R.string.snack_update_not_installable)
                             }
@@ -466,7 +456,7 @@ class UpdatesActivity : AppCompatActivity(), UpdateImporter.Callbacks {
                     if (enabled)
                         View.OnClickListener { _: View? ->
                             cancelInstallationDialog.show()
-                            mWarnMeteredConnectionCard.visibility = View.GONE
+                            mWarnMeteredConnectionCard.isVisible = false
                         }
                     else null
             }
@@ -501,13 +491,13 @@ class UpdatesActivity : AppCompatActivity(), UpdateImporter.Callbacks {
         if (manualRefresh) {
             if (newUpdates) {
                 mUpdateStatus.setText(R.string.system_update_available)
-                mCurrentBuildInfo.visibility = View.GONE
+                mCurrentBuildInfo.isVisible = false
                 setChangelogs(mChangelogSection)
             } else {
                 mUpdateStatus.setText(R.string.system_up_to_date)
-                mCurrentBuildInfo.visibility = View.VISIBLE
-                mChangelogSection.visibility = View.GONE
-                mWarnMeteredConnectionCard.visibility = View.GONE
+                mCurrentBuildInfo.isVisible = true
+                mChangelogSection.isVisible = false
+                mWarnMeteredConnectionCard.isVisible = false
             }
         }
 
@@ -540,10 +530,10 @@ class UpdatesActivity : AppCompatActivity(), UpdateImporter.Callbacks {
 
     private fun processNewJson(json: File, jsonNew: File, manualRefresh: Boolean) {
         try {
-            loadUpdatesList(jsonNew, manualRefresh)
-            val preferences: SharedPreferences = PreferenceManager.getDefaultSharedPreferences(this)
+            val prefs: SharedPreferences = PreferenceManager.getDefaultSharedPreferences(this)
             val millis: Long = System.currentTimeMillis()
-            preferences.edit().putLong(Constants.PREF_LAST_UPDATE_CHECK, millis).apply()
+            loadUpdatesList(jsonNew, manualRefresh)
+            prefs.edit().putLong(Constants.PREF_LAST_UPDATE_CHECK, millis).apply()
             updateLastCheckedString()
             if (json.exists() && isUpdateCheckEnabled(this) && checkForNewUpdates(json, jsonNew)) {
                 UpdatesCheckReceiver.updateRepeatingUpdatesCheck(this)
@@ -556,18 +546,18 @@ class UpdatesActivity : AppCompatActivity(), UpdateImporter.Callbacks {
             mUpdateStatus.setText(R.string.check_for_update_failed)
             mUpdateIcon.setImageResource(R.drawable.ic_system_update_warning)
             showUpdateInfo(R.string.snack_updates_check_failed)
-            mChangelogSection.visibility = View.GONE
-            mWarnMeteredConnectionCard.visibility = View.GONE
-            mCurrentBuildInfo.visibility = View.VISIBLE
+            mChangelogSection.isVisible = false
+            mWarnMeteredConnectionCard.isVisible = false
+            mCurrentBuildInfo.isVisible = true
             setupButtonAction(Action.CHECK_UPDATES, mPrimaryActionButton, true)
         } catch (e: JSONException) {
             Log.e(TAG, "Could not read json", e)
             mUpdateStatus.setText(R.string.check_for_update_failed)
             mUpdateIcon.setImageResource(R.drawable.ic_system_update_warning)
             showUpdateInfo(R.string.snack_updates_check_failed)
-            mChangelogSection.visibility = View.GONE
-            mWarnMeteredConnectionCard.visibility = View.GONE
-            mCurrentBuildInfo.visibility = View.VISIBLE
+            mChangelogSection.isVisible = false
+            mWarnMeteredConnectionCard.isVisible = false
+            mCurrentBuildInfo.isVisible = true
             setupButtonAction(Action.CHECK_UPDATES, mPrimaryActionButton, true)
         }
     }
@@ -589,9 +579,9 @@ class UpdatesActivity : AppCompatActivity(), UpdateImporter.Callbacks {
                         stopRefreshAnimation()
                         mUpdateIcon.setImageResource(R.drawable.ic_system_update_warning)
                         mUpdateStatus.setText(R.string.check_for_update_failed)
-                        mChangelogSection.visibility = View.GONE
-                        mWarnMeteredConnectionCard.visibility = View.GONE
-                        mCurrentBuildInfo.visibility = View.VISIBLE
+                        mChangelogSection.isVisible = false
+                        mWarnMeteredConnectionCard.isVisible = false
+                        mCurrentBuildInfo.isVisible = true
                         setupButtonAction(Action.CHECK_UPDATES, mPrimaryActionButton, true)
                     }
                 }
@@ -620,9 +610,9 @@ class UpdatesActivity : AppCompatActivity(), UpdateImporter.Callbacks {
             mUpdateStatus.setText(R.string.check_for_update_failed)
             mUpdateIcon.setImageResource(R.drawable.ic_system_update_warning)
             showUpdateInfo(R.string.snack_updates_check_failed)
-            mChangelogSection.visibility = View.GONE
-            mWarnMeteredConnectionCard.visibility = View.GONE
-            mCurrentBuildInfo.visibility = View.VISIBLE
+            mChangelogSection.isVisible = false
+            mWarnMeteredConnectionCard.isVisible = false
+            mCurrentBuildInfo.isVisible = true
             setupButtonAction(Action.CHECK_UPDATES, mPrimaryActionButton, true)
             return
         }
@@ -632,46 +622,40 @@ class UpdatesActivity : AppCompatActivity(), UpdateImporter.Callbacks {
     }
 
     private fun setChangelogs(mShowChangelogs: TextView) {
-        mShowChangelogs.visibility = View.VISIBLE
-        val changelogUrl: String = getChangelogURL(this)
+        mShowChangelogs.isVisible = true
+        val changelogUrl = getChangelogURL(this)
 
-        // Use ExecutorService for background work
-        val executorService = Executors.newSingleThreadExecutor()
-        executorService.execute {
-            val result: StringBuilder = StringBuilder()
-            try {
-                val url = URL(changelogUrl)
-                val connection = url.openConnection() as HttpURLConnection
-                connection.requestMethod = "GET"
-                connection.connectTimeout = 5000
-                connection.readTimeout = 5000
+        lifecycleScope.launch {
+            val markdown =
+                withContext(Dispatchers.IO) {
+                    try {
+                        val url = URL(changelogUrl)
+                        val connection = url.openConnection() as HttpURLConnection
+                        connection.requestMethod = "GET"
+                        connection.connectTimeout = 5000
+                        connection.readTimeout = 5000
 
-                val reader = BufferedReader(InputStreamReader(connection.inputStream))
-                var line: String
-                while ((reader.readLine().also { line = it }) != null) {
-                    result.append(line).append("\n")
+                        connection.inputStream.bufferedReader().use { reader ->
+                            if (connection.responseCode == HttpURLConnection.HTTP_OK) {
+                                reader.readText()
+                            } else {
+                                getString(R.string.fetch_changelogs_failed)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Could not load changelog", e)
+                        getString(R.string.fetch_changelogs_failed)
+                    }
                 }
-                reader.close()
-                connection.disconnect()
 
-                // Update the UI on the main thread
-                runOnUiThread {
-                    val markwon = Markwon.create(this)
-                    markwon.setMarkdown(mShowChangelogs, result.toString())
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Could not load changelog", e)
-                runOnUiThread {
-                    val markwon = Markwon.create(this)
-                    markwon.setMarkdown(mShowChangelogs, "Failed to load changelogs")
-                }
-            }
+            val markwon = Markwon.create(this@UpdatesActivity)
+            markwon.setMarkdown(mShowChangelogs, markdown)
         }
     }
 
     private fun updateLastCheckedString() {
-        val preferences: SharedPreferences = PreferenceManager.getDefaultSharedPreferences(this)
-        val lastCheck: Long = preferences.getLong(Constants.PREF_LAST_UPDATE_CHECK, -1) / 1000
+        val prefs: SharedPreferences = PreferenceManager.getDefaultSharedPreferences(this)
+        val lastCheck: Long = prefs.getLong(Constants.PREF_LAST_UPDATE_CHECK, -1) / 1000
         val lastCheckString: String =
             getString(
                 R.string.header_last_updates_check,
@@ -688,16 +672,24 @@ class UpdatesActivity : AppCompatActivity(), UpdateImporter.Callbacks {
         }
 
         val update: UpdateInfo = mUpdaterController!!.getUpdate(downloadId)
-        if (update.status == UpdateStatus.PAUSED_ERROR) {
-            setupButtonAction(Action.DELETE, mSecondaryActionButton, true)
-            mUpdateIcon.setImageResource(R.drawable.ic_system_update_warning)
-            showUpdateInfo(R.string.snack_download_failed)
-        } else if (update.status == UpdateStatus.VERIFICATION_FAILED) {
-            mUpdateIcon.setImageResource(R.drawable.ic_system_update_warning)
-            showUpdateInfo(R.string.snack_download_verification_failed)
-        } else if (update.status == UpdateStatus.VERIFIED) {
-            mUpdateInfoWarning.visibility = View.GONE
-            mUpdateStatus.setText(R.string.snack_download_verified)
+        when (update.status) {
+            UpdateStatus.PAUSED_ERROR -> {
+                setupButtonAction(Action.DELETE, mSecondaryActionButton, true)
+                mUpdateIcon.setImageResource(R.drawable.ic_system_update_warning)
+                showUpdateInfo(R.string.snack_download_failed)
+            }
+
+            UpdateStatus.VERIFICATION_FAILED -> {
+                mUpdateIcon.setImageResource(R.drawable.ic_system_update_warning)
+                showUpdateInfo(R.string.snack_download_verification_failed)
+            }
+
+            UpdateStatus.VERIFIED -> {
+                mUpdateInfoWarning.isVisible = false
+                mUpdateStatus.setText(R.string.snack_download_verified)
+            }
+
+            else -> return
         }
     }
 
@@ -706,7 +698,7 @@ class UpdatesActivity : AppCompatActivity(), UpdateImporter.Callbacks {
             setupButtonAction(Action.CHECK_UPDATES, mPrimaryActionButton, true)
             mUpdateIcon.setImageResource(R.drawable.ic_system_update)
             mUpdateStatus.setText(R.string.system_up_to_date)
-            mCurrentBuildInfo.visibility = View.VISIBLE
+            mCurrentBuildInfo.isVisible = true
             mSwipeRefresh.isEnabled = false
             return
         }
@@ -714,8 +706,8 @@ class UpdatesActivity : AppCompatActivity(), UpdateImporter.Callbacks {
         val update: UpdateInfo = mUpdaterController!!.getUpdate(downloadId) ?: return
 
         mUpdateStatus.setText(R.string.system_update_available)
-        mProgress.visibility = View.GONE
-        mCurrentBuildInfo.visibility = View.GONE
+        mProgress.isVisible = false
+        mCurrentBuildInfo.isVisible = false
         setChangelogs(mChangelogSection)
 
         val activeLayout: Boolean =
@@ -749,7 +741,7 @@ class UpdatesActivity : AppCompatActivity(), UpdateImporter.Callbacks {
             mUpdateStatus.setText(R.string.system_update_downloading)
             mUpdateIcon.setImageResource(R.drawable.ic_system_update)
             setupButtonAction(Action.PAUSE, mPrimaryActionButton, true)
-            mWarnMeteredConnectionCard.visibility = View.VISIBLE
+            mWarnMeteredConnectionCard.isVisible = true
             mProgressBar.isIndeterminate = update.status == UpdateStatus.STARTING
             mProgressBar.progress = update.progress
         } else if (mUpdaterController!!.isInstallingUpdate(downloadId)) {
@@ -757,11 +749,11 @@ class UpdatesActivity : AppCompatActivity(), UpdateImporter.Callbacks {
             canDelete = true
             setupButtonAction(Action.CANCEL_INSTALLATION, mSecondaryActionButton, true)
             mUpdateStatus.setText(R.string.system_update_installing)
-            mPrimaryActionButton.visibility = View.GONE
+            mPrimaryActionButton.isVisible = false
             val notAB: Boolean = !mUpdaterController!!.isInstallingABUpdate
             if (Update.LOCAL_ID == update.downloadId) {
-                mChangelogSection.visibility = View.GONE
-                mWarnMeteredConnectionCard.visibility = View.GONE
+                mChangelogSection.isVisible = false
+                mWarnMeteredConnectionCard.isVisible = false
                 mUpdateStatus.setText(R.string.local_update_installing)
                 showCancelButton = false
             }
@@ -788,7 +780,7 @@ class UpdatesActivity : AppCompatActivity(), UpdateImporter.Callbacks {
             val percentage: String =
                 NumberFormat.getPercentInstance().format((update.progress / 100f).toDouble())
             mUpdateIcon.setImageResource(R.drawable.ic_system_update)
-            mWarnMeteredConnectionCard.visibility = View.VISIBLE
+            mWarnMeteredConnectionCard.isVisible = true
             mProgressPercent.text = percentage
             mProgressText.text = getString(R.string.list_download_progress_newer, downloaded, total)
             mProgressBar.isIndeterminate = false
@@ -803,7 +795,7 @@ class UpdatesActivity : AppCompatActivity(), UpdateImporter.Callbacks {
         )
         mSecondaryActionButton.visibility = if (showCancelButton) View.VISIBLE else View.GONE
 
-        mProgress.visibility = View.VISIBLE
+        mProgress.isVisible = true
         mSwipeRefresh.isEnabled = false
     }
 
@@ -813,24 +805,24 @@ class UpdatesActivity : AppCompatActivity(), UpdateImporter.Callbacks {
         if (mUpdaterController!!.isWaitingForReboot(downloadId)) {
             mUpdateIcon.setImageResource(R.drawable.ic_system_update_success)
             mUpdateStatus.setText(R.string.installing_update_finished)
-            mChangelogSection.visibility = View.GONE
+            mChangelogSection.isVisible = false
             setupButtonAction(Action.REBOOT, mPrimaryActionButton, true)
-            mPrimaryActionButton.visibility = View.VISIBLE
+            mPrimaryActionButton.isVisible = true
         } else if (update.persistentStatus == UpdateStatus.Persistent.VERIFIED) {
             showCancelButton = true
             if (canInstall(update)) {
                 setupButtonAction(Action.INSTALL, mPrimaryActionButton, !isBusy)
             } else {
-                mPrimaryActionButton.visibility = View.GONE
+                mPrimaryActionButton.isVisible = false
                 setupButtonAction(Action.DELETE, mSecondaryActionButton, !isBusy)
             }
         } else {
-            mWarnMeteredConnectionCard.visibility = View.VISIBLE
+            mWarnMeteredConnectionCard.isVisible = true
             setupButtonAction(Action.DOWNLOAD, mPrimaryActionButton, !isBusy)
         }
 
         mSecondaryActionButton.visibility = if (showCancelButton) View.VISIBLE else View.GONE
-        mProgress.visibility = View.GONE
+        mProgress.isVisible = false
     }
 
     private fun removeUpdate(downloadId: String) {
@@ -847,7 +839,7 @@ class UpdatesActivity : AppCompatActivity(), UpdateImporter.Callbacks {
                     mUpdaterController!!.isInstallingUpdate
 
     private fun showUpdateInfo(stringId: Int) {
-        mUpdateInfoWarning.visibility = View.VISIBLE
+        mUpdateInfoWarning.isVisible = true
         mUpdateInfoWarning.setText(stringId)
     }
 
@@ -856,11 +848,11 @@ class UpdatesActivity : AppCompatActivity(), UpdateImporter.Callbacks {
             .setTitle(R.string.confirm_delete_dialog_title)
             .setMessage(R.string.confirm_delete_dialog_message)
             .setPositiveButton(android.R.string.ok) { _: DialogInterface?, _: Int ->
-                mWarnMeteredConnectionCard.visibility = View.GONE
+                mWarnMeteredConnectionCard.isVisible = false
                 mUpdaterController!!.pauseDownload(downloadId)
                 mUpdaterController!!.deleteUpdate(downloadId)
-                mSecondaryActionButton.visibility = View.GONE
-                mUpdateInfoWarning.visibility = View.GONE
+                mSecondaryActionButton.isVisible = false
+                mUpdateInfoWarning.isVisible = false
                 mSwipeRefresh.isEnabled = true
             }
             .setNegativeButton(android.R.string.cancel, null)
@@ -929,7 +921,7 @@ class UpdatesActivity : AppCompatActivity(), UpdateImporter.Callbacks {
                     val intent = Intent(this, UpdaterService::class.java)
                     intent.setAction(UpdaterService.ACTION_INSTALL_STOP)
                     startService(intent)
-                    mSecondaryActionButton.visibility = View.GONE
+                    mSecondaryActionButton.isVisible = false
                 }
                 .setNegativeButton(android.R.string.cancel, null)
         }
